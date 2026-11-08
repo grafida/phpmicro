@@ -34,7 +34,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-14
+          - runner: macos-15
             asset: macos-aarch64.standard.sfx
           - runner: macos-15-intel
             asset: macos-x86_64.standard.sfx
