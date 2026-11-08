@@ -16,6 +16,12 @@ on:
 
 env:
   PHP_VERSION: "8.4"
+  # static-php-cli commit to build with (branch v3, as of 2026-07-27, the last
+  # one known to work). Do NOT track the branch head: from 7d11cad5 (2026-08-07)
+  # a `-L php-micro:<path>` local source is no longer linked into
+  # php-src/sapi/micro, so the Windows build dies with "Reading file
+  # ...\sapi\micro\php_micro.c failed". Bump deliberately, after checking it.
+  SPC_REF: "59584de4aa9d8067e4ce30d2ff990e7b9e14db43"
   # Boson's STANDARD_SFX_EXTENSIONS (vendor/boson-php/compiler, MacOSBuiltinTarget)
   EXTENSIONS: "ctype,curl,dom,ffi,filter,iconv,libxml,mbstring,opcache,openssl,pdo,pdo_sqlite,phar,shmop,sockets,sodium,sqlite3,xml,zlib"
   # static-php-cli downloads prebuilt tools/sources from GitHub; without a token
@@ -42,7 +48,9 @@ jobs:
           extensions: curl, openssl, mbstring, tokenizer, phar
 
       - name: Check out static-php-cli (build tool)
-        run: git clone --depth=1 https://github.com/crazywhalecc/static-php-cli.git spc-tool
+        run: |
+          git clone https://github.com/crazywhalecc/static-php-cli.git spc-tool
+          git -C spc-tool checkout ${{ env.SPC_REF }}
 
       - name: Prepare static-php-cli
         working-directory: spc-tool
@@ -107,7 +115,9 @@ jobs:
           extensions: curl, openssl, mbstring, tokenizer, phar
 
       - name: Check out static-php-cli (build tool)
-        run: git clone --depth=1 https://github.com/crazywhalecc/static-php-cli.git spc-tool
+        run: |
+          git clone https://github.com/crazywhalecc/static-php-cli.git spc-tool
+          git -C spc-tool checkout ${{ env.SPC_REF }}
 
       - name: Prepare static-php-cli
         working-directory: spc-tool
