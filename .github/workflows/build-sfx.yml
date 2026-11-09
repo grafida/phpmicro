@@ -433,5 +433,5 @@ jobs:
           NOTES="Immutable build of the sibling-payload micro.sfx runtimes: PHP ${PHP_VERSION}, static-php-cli ${SPC_REF}, branch ${GITHUB_REF_NAME}, commit ${GITHUB_SHA}. Assets: $(cd assets && ls | grep -v '\.sha256$' | tr '\n' ' ')"
           gh release create "$TAG" assets/* --draft --target "$GITHUB_SHA" \
             --title "micro.sfx $TAG" --notes "$NOTES" --latest=false
-          gh release edit "$TAG" --draft=false
+          gh release edit "$TAG" --draft=false --latest=false
           echo "Published $TAG" >> "$GITHUB_STEP_SUMMARY"
