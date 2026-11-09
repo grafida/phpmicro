@@ -2,17 +2,31 @@
 #
 # phpmicro is a PHP SAPI: it cannot be built standalone. This workflow checks
 # out stock static-php-cli as the build tool and points it back at THIS
-# repository (-L custom-local source), producing a statically linked micro.sfx
-# per platform with the extension set Boson's "standard" macOS edition ships.
+# repository (-L custom-local source), producing a micro.sfx per platform with
+# the extension set Boson's "standard" macOS edition ships. macOS and Windows are
+# fully static; Linux links glibc dynamically (see the build-linux job).
 #
-# Every push to sibling-phar refreshes the rolling "sfx-latest" release, whose
-# assets Grafida's scripts/fetch-sfx.sh downloads into build/sfx/.
+# Every run publishes what it built twice:
+#   - to the rolling "sfx-latest" release, whose assets Grafida's Boson-era
+#     scripts/fetch-sfx.sh downloads into build/sfx/;
+#   - to an immutable "sfx-<YYYYMMDD>.<run>" release, never touched again, so a
+#     consumer can pin a tag + SHA-256 that a later push cannot invalidate
+#     (grafida/shell-packager does; grafida/grafida#86).
 name: Build micro.sfx
 
 on:
   push:
     branches: [sibling-phar]
+  # A manual run can build (and publish) a subset, so adding or fixing one
+  # platform does not rebuild the others: a rebuild picks up the newest PHP
+  # patch release, which changes what consumers of sfx-latest ship.
   workflow_dispatch:
+    inputs:
+      platforms:
+        description: Which runtimes to build and publish
+        type: choice
+        options: [all, linux, macos, windows]
+        default: all
 
 env:
   PHP_VERSION: "8.4"
@@ -30,6 +44,7 @@ env:
 
 jobs:
   build:
+    if: github.event_name != 'workflow_dispatch' || inputs.platforms == 'all' || inputs.platforms == 'macos'
     strategy:
       fail-fast: false
       matrix:
@@ -105,6 +120,7 @@ jobs:
   # *.exe to run, and there is no chmod — so the download/build steps mirror the
   # unix job but the smoke test and packaging are PowerShell.
   build-windows:
+    if: github.event_name != 'workflow_dispatch' || inputs.platforms == 'all' || inputs.platforms == 'windows'
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
@@ -300,10 +316,91 @@ jobs:
           name: windows-x86_64.standard.sfx
           path: out/*
 
+  # Linux links glibc dynamically and everything else statically: a fully static
+  # (musl) binary has no NSS, so names resolved through nss-mdns (".local"),
+  # systemd-resolved or libvirt would not resolve, and static glibc is worse
+  # (it dlopens the host's NSS modules, which must match its own glibc).
+  #
+  # SPC_TOOLCHAIN selects static-php-cli's GCC toolchain, which links the glibc
+  # of the build host: Ubuntu 22.04's 2.35, the floor the Grafida shell already
+  # has (grafida/shell ADR 0001); SPC_TARGET=native-native-gnu makes the rest of
+  # static-php-cli treat the libc as glibc. Both are needed: config/env.ini
+  # defaults SPC_TARGET to <arch>-linux-musl, and with a target set the
+  # toolchain manager ignores SPC_LIBC and builds static musl with Zig. Not the
+  # Zig toolchain's `native-native-gnu.2.35` either: phpmicro's dynamic link
+  # line takes libresolv statically (`-Wl,-Bstatic,-lresolv,-Bdynamic`), which
+  # `zig cc` rejects ("unsupported linker arg"). The result needs libc, libm
+  # and libgcc_s, nothing else.
+  #
+  # static-php-cli hard-codes `--enable-micro=all-static` on Linux, which would
+  # link glibc statically whatever the toolchain; the later `--enable-micro` in
+  # SPC_EXTRA_PHP_VARS wins (autoconf keeps the last value of an option).
+  # .github/scripts/check-linux-sfx.sh fails the job if the result is not what
+  # we meant.
+  build-linux:
+    if: github.event_name != 'workflow_dispatch' || inputs.platforms == 'all' || inputs.platforms == 'linux'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            asset: linux-x86_64.standard.sfx
+          - runner: ubuntu-22.04-arm
+            asset: linux-aarch64.standard.sfx
+    runs-on: ${{ matrix.runner }}
+    env:
+      SPC_TOOLCHAIN: StaticPHP\Toolchain\GccNativeToolchain
+      SPC_TARGET: native-native-gnu
+      SPC_EXTRA_PHP_VARS: --enable-micro
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          extensions: curl, openssl, mbstring, tokenizer, phar
+
+      - name: Check out static-php-cli (build tool)
+        run: |
+          git clone https://github.com/crazywhalecc/static-php-cli.git spc-tool
+          git -C spc-tool checkout ${{ env.SPC_REF }}
+
+      - name: Prepare static-php-cli
+        working-directory: spc-tool
+        run: |
+          composer install --no-interaction --no-progress --no-dev
+          bin/spc doctor --auto-fix
+
+      - name: Download sources (php-micro = this repository)
+        working-directory: spc-tool
+        run: |
+          bin/spc download --with-php=${{ env.PHP_VERSION }} \
+            --for-extensions="${{ env.EXTENSIONS }}" \
+            -L "php-micro:${{ github.workspace }}"
+
+      - name: Build micro.sfx
+        working-directory: spc-tool
+        run: bin/spc build "${{ env.EXTENSIONS }}" --build-micro
+
+      - name: Check the binary and smoke-test the payload modes
+        run: .github/scripts/check-linux-sfx.sh spc-tool/buildroot/bin/micro.sfx
+
+      - name: Rename artifact
+        run: |
+          mkdir -p out
+          cp spc-tool/buildroot/bin/micro.sfx "out/${{ matrix.asset }}"
+          (cd out && sha256sum "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: out/*
+
   publish:
-    needs: [build, build-windows]
+    needs: [build, build-windows, build-linux]
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request'
+    # Skipped jobs (a subset dispatch) are fine; a failed one publishes nothing.
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && github.event_name != 'pull_request' }}
     permissions:
       contents: write
     steps:
@@ -323,3 +420,18 @@ jobs:
             || gh release create sfx-latest --title "micro.sfx (rolling)" --notes "$NOTES" --latest=false
           gh release edit sfx-latest --notes "$NOTES"
           gh release upload sfx-latest assets/* --clobber
+
+      # Created as a draft and published only once every asset is up, so a
+      # half-uploaded release is never visible; then never written to again.
+      # A re-run attempt gets its own tag rather than overwriting this one.
+      - name: Publish immutable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="sfx-$(date -u +%Y%m%d).${GITHUB_RUN_NUMBER}"
+          [ "$GITHUB_RUN_ATTEMPT" = 1 ] || TAG="$TAG.$GITHUB_RUN_ATTEMPT"
+          NOTES="Immutable build of the sibling-payload micro.sfx runtimes: PHP ${PHP_VERSION}, static-php-cli ${SPC_REF}, branch ${GITHUB_REF_NAME}, commit ${GITHUB_SHA}. Assets: $(cd assets && ls | grep -v '\.sha256$' | tr '\n' ' ')"
+          gh release create "$TAG" assets/* --draft --target "$GITHUB_SHA" \
+            --title "micro.sfx $TAG" --notes "$NOTES" --latest=false
+          gh release edit "$TAG" --draft=false
+          echo "Published $TAG" >> "$GITHUB_STEP_SUMMARY"
