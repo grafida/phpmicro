@@ -12,6 +12,24 @@
 #   - to an immutable "sfx-<YYYYMMDD>.<run>" release, never touched again, so a
 #     consumer can pin a tag + SHA-256 that a later push cannot invalidate
 #     (grafida/shell-packager does; grafida/grafida#86).
+#
+# ⚠️ So every push to sibling-phar rebuilds every platform and REWRITES
+# sfx-latest, which changes what Boson's release ships. A commit that is not
+# meant to rebuild (a script, a doc, this file) carries [skip ci].
+#
+# A dispatch with platforms=promote-<asset> builds nothing and never writes
+# sfx-latest: it takes that asset as it is in sfx-latest, checks it against the
+# SHA-256 the dispatcher states and against the published .sha256, runs the
+# platform's check script on it, and publishes it alone to a new immutable
+# release (grafida/grafida#88). This is how a runtime that has only ever been
+# in sfx-latest gets a pin without a rebuild:
+#
+#   gh workflow run build-sfx.yml -R grafida/phpmicro --ref sibling-phar \
+#     -f platforms=promote-macos-aarch64 -f sha256=<hash>
+#
+# (It is a mode of this workflow, not a workflow of its own, because GitHub
+# only dispatches a workflow that is on the default branch, master, or has run
+# before.)
 name: Build micro.sfx
 
 on:
@@ -23,10 +41,14 @@ on:
   workflow_dispatch:
     inputs:
       platforms:
-        description: Which runtimes to build and publish
+        description: Which runtimes to build and publish, or one sfx-latest asset to promote unchanged
         type: choice
-        options: [all, linux, macos, windows]
+        options: [all, linux, macos, windows, promote-macos-aarch64]
         default: all
+      sha256:
+        description: For promote-*, the SHA-256 of the asset being promoted (anything else is refused)
+        type: string
+        default: ""
 
 env:
   PHP_VERSION: "8.4"
@@ -50,8 +72,10 @@ jobs:
       matrix:
         include:
           - runner: macos-15
+            arch: arm64
             asset: macos-aarch64.standard.sfx
           - runner: macos-15-intel
+            arch: x86_64
             asset: macos-x86_64.standard.sfx
     runs-on: ${{ matrix.runner }}
     steps:
@@ -87,22 +111,12 @@ jobs:
         working-directory: spc-tool
         run: bin/spc build "${{ env.EXTENSIONS }}" --build-micro
 
-      - name: Smoke-test the sibling payload modes
-        working-directory: spc-tool
-        run: |
-          SFX=buildroot/bin/micro.sfx
-          printf '<?php echo "ok\n";' > t.php
-          # appended (regression)
-          cat "$SFX" t.php > comb && chmod +x comb
-          test "$(./comb)" = ok
-          # sibling "<self>.phar"
-          cp "$SFX" t && chmod +x t && cp t.php t.phar
-          test "$(./t)" = ok
-          # sibling "../Resources/<self>.phar" (macOS bundle layout)
-          mkdir -p B/Contents/MacOS B/Contents/Resources
-          cp "$SFX" B/Contents/MacOS/t && chmod +x B/Contents/MacOS/t
-          cp t.php B/Contents/Resources/t.phar
-          test "$(B/Contents/MacOS/t)" = ok
+      # Also the guard that the sibling patch made it into the binary: the
+      # sibling modes fail on stock phpmicro.
+      - name: Check the binary and smoke-test the payload modes
+        env:
+          EXPECT_ARCH: ${{ matrix.arch }}
+        run: .github/scripts/check-macos-sfx.sh spc-tool/buildroot/bin/micro.sfx
 
       - name: Rename artifact
         run: |
@@ -400,7 +414,8 @@ jobs:
     needs: [build, build-windows, build-linux]
     runs-on: ubuntu-latest
     # Skipped jobs (a subset dispatch) are fine; a failed one publishes nothing.
-    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && github.event_name != 'pull_request' }}
+    # A promotion builds nothing and must never write sfx-latest.
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && github.event_name != 'pull_request' && !startsWith(inputs.platforms, 'promote-') }}
     permissions:
       contents: write
     steps:
@@ -434,4 +449,79 @@ jobs:
           gh release create "$TAG" assets/* --draft --target "$GITHUB_SHA" \
             --title "micro.sfx $TAG" --notes "$NOTES" --latest=false
           gh release edit "$TAG" --draft=false --latest=false
+          echo "Published $TAG" >> "$GITHUB_STEP_SUMMARY"
+
+  # --- promotion (dispatch only; see the header) -------------------------------
+  promote-check:
+    if: github.event_name == 'workflow_dispatch' && startsWith(inputs.platforms, 'promote-macos-')
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          extensions: phar
+
+      - name: Download from sfx-latest and verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLATFORMS: ${{ inputs.platforms }}
+          EXPECTED: ${{ inputs.sha256 }}
+        run: |
+          ASSET="${PLATFORMS#promote-}.standard.sfx"
+          [[ "$EXPECTED" =~ ^[0-9a-f]{64}$ ]] || { echo "sha256 must be 64 lower-case hex digits" >&2; exit 1; }
+          mkdir -p in out
+          gh release download sfx-latest -R "$GITHUB_REPOSITORY" -p "$ASSET" -p "$ASSET.sha256" -D in
+          actual="$(shasum -a 256 "in/$ASSET" | awk '{print $1}')"
+          published="$(awk '{print $1}' "in/$ASSET.sha256")"
+          echo "requested $EXPECTED"; echo "actual    $actual"; echo "published $published"
+          [ "$actual" = "$EXPECTED" ] || { echo "the asset is not the one requested" >&2; exit 1; }
+          [ "$published" = "$EXPECTED" ] || { echo "the published .sha256 disagrees" >&2; exit 1; }
+          cp "in/$ASSET" "out/$ASSET"
+          (cd out && shasum -a 256 "$ASSET" > "$ASSET.sha256")
+          ASSET="$ASSET" gh release view sfx-latest -R "$GITHUB_REPOSITORY" --json body,assets \
+            -q '"Promoted from sfx-latest, whose notes then read: " + .body, (.assets[] | select(.name == env.ASSET) | "The asset was uploaded there at " + .updatedAt + ".")' \
+            > provenance.txt
+          cat provenance.txt
+          echo "ASSET=$ASSET" >> "$GITHUB_ENV"
+
+      - name: Check the binary and smoke-test the payload modes
+        env:
+          EXPECT_ARCH: arm64
+        run: .github/scripts/check-macos-sfx.sh "out/$ASSET"
+
+      - run: mv provenance.txt out/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: promoted
+          path: out/*
+
+  # Never touches sfx-latest. Created as a draft and published once every asset
+  # is up, never marked Latest, and never written to again.
+  promote-publish:
+    needs: promote-check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: promoted
+          path: out
+
+      - name: Publish immutable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="sfx-$(date -u +%Y%m%d).${GITHUB_RUN_NUMBER}"
+          [ "$GITHUB_RUN_ATTEMPT" = 1 ] || TAG="$TAG.$GITHUB_RUN_ATTEMPT"
+          set -- out/*.standard.sfx
+          [ "$#" = 1 ] && [ -f "$1" ] || { echo "expected exactly one runtime in the artifact" >&2; exit 1; }
+          ASSET="$(basename "$1")"
+          NOTES="Immutable promotion of ${ASSET}, unchanged (SHA-256 $(awk '{print $1}' "out/$ASSET.sha256")), checked by check-macos-sfx.sh on macos-15 in ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. $(cat out/provenance.txt)"
+          gh release create "$TAG" "out/$ASSET" "out/$ASSET.sha256" -R "$GITHUB_REPOSITORY" \
+            --draft --target "$GITHUB_SHA" --title "micro.sfx $TAG" --notes "$NOTES" --latest=false
+          gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false --latest=false
           echo "Published $TAG" >> "$GITHUB_STEP_SUMMARY"
