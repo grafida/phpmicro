@@ -49,6 +49,11 @@ on:
         description: For promote-*, the SHA-256 of the asset being promoted (anything else is refused)
         type: string
         default: ""
+      runner:
+        description: For promote-*, the arm64 macOS runner that checks it (GitHub's macos-15 pool is sometimes out of capacity)
+        type: choice
+        options: [macos-15, macos-14, macos-26]
+        default: macos-15
 
 env:
   PHP_VERSION: "8.4"
@@ -454,7 +459,7 @@ jobs:
   # --- promotion (dispatch only; see the header) -------------------------------
   promote-check:
     if: github.event_name == 'workflow_dispatch' && startsWith(inputs.platforms, 'promote-macos-')
-    runs-on: macos-15
+    runs-on: ${{ inputs.runner }}
     steps:
       - uses: actions/checkout@v4
 
@@ -514,13 +519,14 @@ jobs:
       - name: Publish immutable release
         env:
           GH_TOKEN: ${{ github.token }}
+          CHECK_RUNNER: ${{ inputs.runner }}
         run: |
           TAG="sfx-$(date -u +%Y%m%d).${GITHUB_RUN_NUMBER}"
           [ "$GITHUB_RUN_ATTEMPT" = 1 ] || TAG="$TAG.$GITHUB_RUN_ATTEMPT"
           set -- out/*.standard.sfx
           [ "$#" = 1 ] && [ -f "$1" ] || { echo "expected exactly one runtime in the artifact" >&2; exit 1; }
           ASSET="$(basename "$1")"
-          NOTES="Immutable promotion of ${ASSET}, unchanged (SHA-256 $(awk '{print $1}' "out/$ASSET.sha256")), checked by check-macos-sfx.sh on macos-15 in ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. $(cat out/provenance.txt)"
+          NOTES="Immutable promotion of ${ASSET}, unchanged (SHA-256 $(awk '{print $1}' "out/$ASSET.sha256")), checked by check-macos-sfx.sh on ${CHECK_RUNNER} in ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. $(cat out/provenance.txt)"
           gh release create "$TAG" "out/$ASSET" "out/$ASSET.sha256" -R "$GITHUB_REPOSITORY" \
             --draft --target "$GITHUB_SHA" --title "micro.sfx $TAG" --notes "$NOTES" --latest=false
           gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false --latest=false
