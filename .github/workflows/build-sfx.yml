@@ -52,7 +52,7 @@ on:
       runner:
         description: For promote-*, the arm64 macOS runner that checks it (GitHub's macos-15 pool is sometimes out of capacity)
         type: choice
-        options: [macos-15, macos-14, macos-26]
+        options: [macos-15, macos-26]
         default: macos-15
 
 env:
