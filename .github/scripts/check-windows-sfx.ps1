@@ -67,6 +67,23 @@ Expect 'b.exe' 'ok' 'sibling <self>.phar'
 Copy-Item micro.sfx worker.exe; Copy-Item ini.phar worker.phar
 Expect 'worker.exe' '345M payload phar' 'PHAR behind an extra-INI block'
 
+# 4b. the same, started through an 8.3 short path (C:\Users\RUNNER~1\... on a runner): the
+# sibling must still be read behind its extra-INI block, which needs its path spelled as PHP's
+# realpath() spells it (grafida/grafida#91)
+$long = Join-Path $Work 'a directory with a long name'
+New-Item -ItemType Directory -Force $long | Out-Null
+Copy-Item micro.sfx (Join-Path $long 'worker.exe'); Copy-Item ini.phar (Join-Path $long 'worker.phar')
+$short = (New-Object -ComObject Scripting.FileSystemObject).GetFolder($long).ShortPath
+if ($short -eq $long) {
+    Write-Host "SKIPPED: started through a short path (this volume makes no 8.3 names)"
+} else {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo -ArgumentList (Join-Path $short 'worker.exe')
+    $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+    $sp = [System.Diagnostics.Process]::Start($psi); $got = $sp.StandardOutput.ReadToEnd().Trim(); $sp.WaitForExit()
+    if ($got -ne '345M payload phar') { Fail "started through the short path $short, the PHAR behind its extra-INI block reads '$got'" }
+    Write-Host "ok: started through a short path ($short): $got"
+}
+
 # 5. signed with a throwaway self-signed certificate
 Copy-Item micro.sfx signed.exe; Copy-Item ini.phar signed.phar
 $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=Grafida SFX Check' -CertStoreLocation Cert:\CurrentUser\My

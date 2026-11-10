@@ -109,6 +109,52 @@ struct _ext_ini {
 
 #ifdef PHP_WIN32
 const wchar_t *micro_get_filename_w();
+
+#ifdef PHP_WIN32
+/*
+ * The sibling payload's path as PHP's own realpath() spells it: long names, links
+ * resolved, no \\?\ prefix (grafida/grafida#91). The candidates are built from the
+ * executable's path as it was launched, which can name it through 8.3 short names
+ * (C:\Users\RUNNER~1\...); the plain-file and phar hooks compare the payload path
+ * with the realpath()'d one PHP opens, so a short spelling never matched, the
+ * extra-ini offset was never applied, and every read from the PHAR landed in its
+ * manifest. Falls back to the candidate itself when the handle cannot be named.
+ * The result is malloc()ed.
+ */
+static wchar_t *micro_final_path_w(HANDLE file, const wchar_t *fallback)
+{
+    const DWORD flags = FILE_NAME_NORMALIZED | VOLUME_NAME_DOS;
+    DWORD n = GetFinalPathNameByHandleW(file, NULL, 0, flags);
+    wchar_t *buf = 0 == n ? NULL : malloc((n + 1) * sizeof(wchar_t));
+    if (NULL == buf) {
+        return _wcsdup(fallback);
+    }
+    DWORD got = GetFinalPathNameByHandleW(file, buf, n + 1, flags);
+    if (0 == got || got > n) {
+        free(buf);
+        return _wcsdup(fallback);
+    }
+    if (0 == wcsncmp(buf, L"\\\\?\\UNC\\", 8)) {
+        // \\?\UNC\server\share\x -> \\server\share\x
+        size_t rest = wcslen(buf + 8);
+        wchar_t *unc = malloc((rest + 3) * sizeof(wchar_t));
+        if (NULL == unc) {
+            free(buf);
+            return _wcsdup(fallback);
+        }
+        unc[0] = L'\\';
+        unc[1] = L'\\';
+        memcpy(unc + 2, buf + 8, (rest + 1) * sizeof(wchar_t));
+        free(buf);
+        return unc;
+    }
+    if (0 == wcsncmp(buf, L"\\\\?\\", 4)) {
+        // \\?\C:\x -> C:\x
+        memmove(buf, buf + 4, (wcslen(buf + 4) + 1) * sizeof(wchar_t));
+    }
+    return buf;
+}
+#endif
 #endif // PHP_WIN32
 
 int micro_fileinfo_init(void) {
@@ -209,17 +255,20 @@ int micro_fileinfo_init(void) {
                 // downstream consumers (the plain-file stream hooks, phar mapping)
                 // match the payload by the NARROW path returned from
                 // micro_get_filename(); store the chosen path as UTF-8 so those
-                // string comparisons succeed.
-                int mb_len = WideCharToMultiByte(CP_UTF8, 0, candidates[i], -1, NULL, 0, NULL, NULL);
+                // string comparisons succeed, spelled as realpath() spells it.
+                wchar_t *final_path = micro_final_path_w(sibling, candidates[i]);
+                const wchar_t *payload_w = NULL != final_path ? final_path : candidates[i];
+                int mb_len = WideCharToMultiByte(CP_UTF8, 0, payload_w, -1, NULL, 0, NULL, NULL);
                 if (mb_len > 0) {
                     char *mb = malloc(mb_len);
                     if (NULL != mb &&
-                        0 != WideCharToMultiByte(CP_UTF8, 0, candidates[i], -1, mb, mb_len, NULL, NULL)) {
+                        0 != WideCharToMultiByte(CP_UTF8, 0, payload_w, -1, mb, mb_len, NULL, NULL)) {
                         _micro_payload_path = mb;
                     } else {
                         free(mb);
                     }
                 }
+                free(final_path);
                 dbgprintf("no appended payload, using sibling payload %S\n", candidates[i]);
                 free(candidates[i]);
                 // the sibling file is pure payload (optionally prefixed by an

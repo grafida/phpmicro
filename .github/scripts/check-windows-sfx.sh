@@ -30,6 +30,9 @@
 #   4. a real PHAR behind an extra-INI block (magic fd f6 69 e6, 4-byte
 #      big-endian length, ini text) as the sibling, with ini_get() proving the
 #      block applied and a file read from inside the PHAR;
+#      ... and started through an 8.3 short path of its directory (a runner's
+#      TEMP is one): the payload path must be spelled as PHP's realpath() spells
+#      it, or the hooks never match and the extra-INI offset is lost;
 #   5. that stub signed with a throwaway self-signed certificate: the
 #      certificate table lands past the last section, and the sibling must still
 #      load;
