@@ -53,6 +53,9 @@ Copy-Item $Sfx (Join-Path $Work 'micro.sfx')
 # 1. appended
 Concat 'comb.exe' @('micro.sfx', 't.php')
 Expect 'comb.exe' 'ok' 'appended payload'
+Set-Content -NoNewline -Path (Join-Path $Work 'v.php') -Value '<?php echo PHP_VERSION, " ", PHP_SAPI, " ", implode(",", get_loaded_extensions());'
+Concat 'version.exe' @('micro.sfx', 'v.php')
+Write-Host "runtime: $(Text (Invoke-Exe 'version.exe'))"
 
 # 2. <self without .exe>.phar, and 3. <self>.phar
 Copy-Item micro.sfx a.exe; Copy-Item t.php a.phar

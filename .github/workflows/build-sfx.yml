@@ -288,13 +288,6 @@ jobs:
           if ($out -ne 'ok') { throw "signed sibling mode failed: got '$out'" }
           Write-Host 'signed sibling payload smoke test passed'
 
-      # The full check (grafida/grafida#91): imports, overlay, both sibling names,
-      # the extra-INI block, stdio over real pipes, and no console window for the
-      # SFX's children, watched on the runner's desktop.
-      - name: Check the runtime (check-windows-sfx.sh)
-        shell: bash
-        run: .github/scripts/check-windows-sfx.sh spc-tool/buildroot/bin/micro.sfx
-
       - name: Rename artifact
         shell: pwsh
         run: |
@@ -356,6 +349,14 @@ jobs:
         with:
           name: windows-x86_64.standard.sfx
           path: out/*
+
+      # The full check (grafida/grafida#91): imports, overlay, both sibling names,
+      # the extra-INI block, stdio over real pipes, and no console window for the
+      # SFX's children, watched on the runner's desktop. After the upload, so a
+      # failure leaves the bytes to look at; nothing is published unless it passes.
+      - name: Check the runtime (check-windows-sfx.sh)
+        shell: bash
+        run: .github/scripts/check-windows-sfx.sh out/windows-x86_64.standard.sfx
 
   # Linux links glibc dynamically and everything else statically: a fully static
   # (musl) binary has no NSS, so names resolved through nss-mdns (".local"),
