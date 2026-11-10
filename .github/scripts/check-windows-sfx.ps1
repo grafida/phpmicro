@@ -40,6 +40,11 @@ function Invoke-Exe([string] $exe, [byte[]] $Stdin = $null, [string] $Arguments 
     $p.WaitForExit()
     [pscustomobject]@{ Code = $p.ExitCode; Bytes = $out.ToArray(); Err = $err.Result }
 }
+# .NET Framework writes a redirected stdin through a StreamWriter in the console's input encoding,
+# and a UTF-8 console (a GitHub runner's) has a preamble: three BOM bytes would go to the worker
+# before the payload. The shell writes raw bytes; so must the harness.
+try { [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
+
 function Text($r) { [System.Text.Encoding]::UTF8.GetString($r.Bytes).Trim() }
 function Expect([string] $exe, [string] $expected, [string] $what) {
     $r = Invoke-Exe $exe
@@ -103,7 +108,9 @@ $r = Invoke-Exe 'echo.exe' -Stdin $data
 $t.Stop()
 $back = [BitConverter]::ToString($sha.ComputeHash($r.Bytes))
 if ($r.Code -ne 0 -or $r.Bytes.Length -ne $data.Length -or $back -ne $sent) {
-    Fail "stdio round trip: exit $($r.Code), $($r.Bytes.Length) of $($data.Length) bytes, hashes equal: $($back -eq $sent); stderr: $($r.Err)"
+    $head = (($r.Bytes | Select-Object -First 8) | ForEach-Object { $_.ToString('x2') }) -join ' '
+    $want = (($data | Select-Object -First 8) | ForEach-Object { $_.ToString('x2') }) -join ' '
+    Fail "stdio round trip: exit $($r.Code), $($r.Bytes.Length) of $($data.Length) bytes, hashes equal: $($back -eq $sent); first bytes $head (sent $want); stderr: $($r.Err)"
 }
 Write-Host "ok: 50 MiB through STDIN and STDOUT, byte-exact ($([int]$t.ElapsedMilliseconds) ms)"
 
