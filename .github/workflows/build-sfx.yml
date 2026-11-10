@@ -27,6 +27,14 @@
 #   gh workflow run build-sfx.yml -R grafida/phpmicro --ref sibling-phar \
 #     -f platforms=promote-macos-aarch64 -f sha256=<hash>
 #
+# A dispatch with platforms=windows-immutable builds Windows alone and publishes
+# it to a new immutable release only, never to sfx-latest (grafida/grafida#91):
+# the way to pin a Windows runtime built from this branch's current workflow
+# without changing what Boson's release downloads.
+#
+#   gh workflow run build-sfx.yml -R grafida/phpmicro --ref sibling-phar \
+#     -f platforms=windows-immutable
+#
 # (It is a mode of this workflow, not a workflow of its own, because GitHub
 # only dispatches a workflow that is on the default branch, master, or has run
 # before.)
@@ -43,7 +51,7 @@ on:
       platforms:
         description: Which runtimes to build and publish, or one sfx-latest asset to promote unchanged
         type: choice
-        options: [all, linux, macos, windows, promote-macos-aarch64]
+        options: [all, linux, macos, windows, windows-immutable, promote-macos-aarch64]
         default: all
       sha256:
         description: For promote-*, the SHA-256 of the asset being promoted (anything else is refused)
@@ -139,7 +147,7 @@ jobs:
   # *.exe to run, and there is no chmod — so the download/build steps mirror the
   # unix job but the smoke test and packaging are PowerShell.
   build-windows:
-    if: github.event_name != 'workflow_dispatch' || inputs.platforms == 'all' || inputs.platforms == 'windows'
+    if: github.event_name != 'workflow_dispatch' || inputs.platforms == 'all' || inputs.platforms == 'windows' || inputs.platforms == 'windows-immutable'
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
@@ -165,6 +173,13 @@ jobs:
         run: |
           composer install --no-interaction --no-progress --no-dev
           bin/spc doctor --auto-fix
+
+      # The SFX is a GUI-subsystem build with no console to share, so its console
+      # children must get CREATE_NO_WINDOW, as upstream PHP gives any non-cli
+      # SAPI's children; static-php-cli's cli_checks patch takes it away from
+      # micro (grafida/grafida#91). Fails if the patch no longer has those hunks.
+      - name: Keep CREATE_NO_WINDOW for micro's child processes
+        run: php .github/scripts/keep-create-no-window.php spc-tool/src/globals/patch/php-src-patches
 
       - name: Download sources (php-micro = this repository)
         working-directory: spc-tool
@@ -272,6 +287,13 @@ jobs:
           $out = Invoke-Payload 'signed.exe'
           if ($out -ne 'ok') { throw "signed sibling mode failed: got '$out'" }
           Write-Host 'signed sibling payload smoke test passed'
+
+      # The full check (grafida/grafida#91): imports, overlay, both sibling names,
+      # the extra-INI block, stdio over real pipes, and no console window for the
+      # SFX's children, watched on the runner's desktop.
+      - name: Check the runtime (check-windows-sfx.sh)
+        shell: bash
+        run: .github/scripts/check-windows-sfx.sh spc-tool/buildroot/bin/micro.sfx
 
       - name: Rename artifact
         shell: pwsh
@@ -431,7 +453,9 @@ jobs:
           path: assets
           merge-multiple: true
 
+      # windows-immutable never writes sfx-latest (see the header).
       - name: Publish rolling sfx-latest release
+        if: inputs.platforms != 'windows-immutable'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
