@@ -27,6 +27,11 @@
 #   gh workflow run build-sfx.yml -R grafida/phpmicro --ref sibling-phar \
 #     -f platforms=promote-macos-aarch64 -f sha256=<hash>
 #
+# promote-macos-x86_64 does the same for the Intel runtime (grafida/grafida#92).
+# Its check runs on macos-15-intel, natively, whatever `runner` says: the
+# runtime half of check-macos-sfx.sh executes the file, and an arm64 runner
+# would only run it under Rosetta 2.
+#
 # A dispatch with platforms=windows-immutable builds Windows alone and publishes
 # it to a new immutable release only, never to sfx-latest (grafida/grafida#91):
 # the way to pin a Windows runtime built from this branch's current workflow
@@ -51,14 +56,14 @@ on:
       platforms:
         description: Which runtimes to build and publish, or one sfx-latest asset to promote unchanged
         type: choice
-        options: [all, linux, macos, windows, windows-immutable, promote-macos-aarch64]
+        options: [all, linux, macos, windows, windows-immutable, promote-macos-aarch64, promote-macos-x86_64]
         default: all
       sha256:
         description: For promote-*, the SHA-256 of the asset being promoted (anything else is refused)
         type: string
         default: ""
       runner:
-        description: For promote-*, the arm64 macOS runner that checks it (GitHub's macos-15 pool is sometimes out of capacity)
+        description: For promote-macos-aarch64, the arm64 macOS runner that checks it (GitHub's macos-15 pool is sometimes out of capacity); promote-macos-x86_64 always uses macos-15-intel
         type: choice
         options: [macos-15, macos-26]
         default: macos-15
@@ -484,7 +489,7 @@ jobs:
   # --- promotion (dispatch only; see the header) -------------------------------
   promote-check:
     if: github.event_name == 'workflow_dispatch' && startsWith(inputs.platforms, 'promote-macos-')
-    runs-on: ${{ inputs.runner }}
+    runs-on: ${{ inputs.platforms == 'promote-macos-x86_64' && 'macos-15-intel' || inputs.runner }}
     steps:
       - uses: actions/checkout@v4
 
@@ -518,7 +523,7 @@ jobs:
 
       - name: Check the binary and smoke-test the payload modes
         env:
-          EXPECT_ARCH: arm64
+          EXPECT_ARCH: ${{ inputs.platforms == 'promote-macos-x86_64' && 'x86_64' || 'arm64' }}
         run: .github/scripts/check-macos-sfx.sh "out/$ASSET"
 
       - run: mv provenance.txt out/
@@ -544,7 +549,7 @@ jobs:
       - name: Publish immutable release
         env:
           GH_TOKEN: ${{ github.token }}
-          CHECK_RUNNER: ${{ inputs.runner }}
+          CHECK_RUNNER: ${{ inputs.platforms == 'promote-macos-x86_64' && 'macos-15-intel' || inputs.runner }}
         run: |
           TAG="sfx-$(date -u +%Y%m%d).${GITHUB_RUN_NUMBER}"
           [ "$GITHUB_RUN_ATTEMPT" = 1 ] || TAG="$TAG.$GITHUB_RUN_ATTEMPT"

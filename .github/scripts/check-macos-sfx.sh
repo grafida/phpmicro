@@ -15,6 +15,11 @@
 # the Command Line Tools (otool, lipo, codesign). Runs in a throwaway directory.
 # Nothing here needs a signing identity: every signature is ad hoc.
 #
+# The payload modes execute the file, so the machine must run EXPECT_ARCH: an
+# x86_64 runtime is checked on an Intel Mac, or on Apple Silicon under
+# Rosetta 2 (grafida/grafida#92). Without Rosetta the check fails after the
+# static part rather than skipping the rest.
+#
 # Build: a thin Mach-O of EXPECT_ARCH whose LC_BUILD_VERSION minos is at most
 # MACOS_MIN. The floor is read from the binary, not assumed, because the
 # runner's SDK decides it when nobody sets MACOSX_DEPLOYMENT_TARGET, and a
@@ -75,6 +80,13 @@ while read -r lib; do
         *) fail "links $lib, which is not part of macOS" ;;
     esac
 done <<< "$libs"
+
+# --- can this machine run it? -------------------------------------------------
+if [ "$EXPECT_ARCH" = x86_64 ] && [ "$(uname -m)" = arm64 ]; then
+    arch -x86_64 /usr/bin/true 2>/dev/null \
+        || fail "the static checks passed, but this arm64 Mac cannot run x86_64 code: Rosetta 2 is not installed, so the payload modes are unchecked"
+    echo "running x86_64 under Rosetta 2"
+fi
 
 # --- payload modes -----------------------------------------------------------
 WORK="$(mktemp -d)"
