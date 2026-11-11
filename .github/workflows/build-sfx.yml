@@ -3,19 +3,20 @@
 # phpmicro is a PHP SAPI: it cannot be built standalone. This workflow checks
 # out stock static-php-cli as the build tool and points it back at THIS
 # repository (-L custom-local source), producing a micro.sfx per platform with
-# the extension set Boson's "standard" macOS edition ships. macOS and Windows are
+# the extension set Grafida's worker needs (first copied from Boson's "standard"
+# macOS edition, which Grafida shipped on up to 0.3). macOS and Windows are
 # fully static; Linux links glibc dynamically (see the build-linux job).
 #
 # Every run publishes what it built twice:
-#   - to the rolling "sfx-latest" release, whose assets Grafida's Boson-era
-#     scripts/fetch-sfx.sh downloads into build/sfx/;
+#   - to the rolling "sfx-latest" release, which Grafida's Boson builds (up to
+#     0.3) downloaded; nothing Grafida ships uses it since 0.4 (grafida/grafida#92);
 #   - to an immutable "sfx-<YYYYMMDD>.<run>" release, never touched again, so a
 #     consumer can pin a tag + SHA-256 that a later push cannot invalidate
 #     (grafida/shell-packager does; grafida/grafida#86).
 #
 # ⚠️ So every push to sibling-phar rebuilds every platform and REWRITES
-# sfx-latest, which changes what Boson's release ships. A commit that is not
-# meant to rebuild (a script, a doc, this file) carries [skip ci].
+# sfx-latest, and mints a new immutable release nobody asked for. A commit that
+# is not meant to rebuild (a script, a doc, this file) carries [skip ci].
 #
 # A dispatch with platforms=promote-<asset> builds nothing and never writes
 # sfx-latest: it takes that asset as it is in sfx-latest, checks it against the
@@ -35,7 +36,7 @@
 # A dispatch with platforms=windows-immutable builds Windows alone and publishes
 # it to a new immutable release only, never to sfx-latest (grafida/grafida#91):
 # the way to pin a Windows runtime built from this branch's current workflow
-# without changing what Boson's release downloads.
+# without rewriting sfx-latest.
 #
 #   gh workflow run build-sfx.yml -R grafida/phpmicro --ref sibling-phar \
 #     -f platforms=windows-immutable
@@ -76,7 +77,8 @@ env:
   # php-src/sapi/micro, so the Windows build dies with "Reading file
   # ...\sapi\micro\php_micro.c failed". Bump deliberately, after checking it.
   SPC_REF: "59584de4aa9d8067e4ce30d2ff990e7b9e14db43"
-  # Boson's STANDARD_SFX_EXTENSIONS (vendor/boson-php/compiler, MacOSBuiltinTarget)
+  # Grafida's worker extensions; first copied from Boson's STANDARD_SFX_EXTENSIONS
+  # (its compiler's MacOSBuiltinTarget). Changing it means re-pinning every platform.
   EXTENSIONS: "ctype,curl,dom,ffi,filter,iconv,libxml,mbstring,opcache,openssl,pdo,pdo_sqlite,phar,shmop,sockets,sodium,sqlite3,xml,zlib"
   # static-php-cli downloads prebuilt tools/sources from GitHub; without a token
   # the anonymous API rate limit on shared runners makes those downloads fail.
@@ -305,10 +307,11 @@ jobs:
 
       # Collect the Visual C++ 2015-2022 runtime DLLs (app-local redistributable)
       # and publish them alongside the SFX. They are NOT a phpmicro dependency (the
-      # SFX is statically linked); they are for the CONSUMER: Boson's prebuilt
-      # libboson-windows-x86_64.dll imports MSVCP140*/VCRUNTIME140*, which a clean
-      # Windows (especially Server) lacks. Grafida ships them next to grafida.exe so
-      # its per-user, no-admin installer is self-contained. This Windows CI is the
+      # SFX is statically linked); they were for the CONSUMER: Boson's prebuilt
+      # libboson-windows-x86_64.dll imported MSVCP140*/VCRUNTIME140*, which a clean
+      # Windows (especially Server) lacks, so Grafida shipped them next to grafida.exe
+      # up to 0.3 to keep its per-user, no-admin installer self-contained; since 0.4
+      # nothing it ships needs them (grafida/grafida#92). This Windows CI is the
       # only place in the toolchain with a real VS install, hence here. Sourced from
       # the VS Redist folder — the canonical redistributable copy, app-local
       # deployment permitted by its license.
